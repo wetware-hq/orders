@@ -28,6 +28,10 @@ CALL_PERMS = {
     "clinician": {"observe", "step"},
     "clinician_agent": {"observe", "step"},
 }
+# Patient screens never show a machine code: refusal code -> signed patient line id (ids only; wording is in WORDING.md).
+PATIENT_LINE = {"role_fixed_at_session_open": "PV-CARE-TEAM-STEP", "action_type": "PV-TRY-AGAIN", "fields": "PV-TRY-AGAIN", "timestamp": "PV-TRY-AGAIN", "interpreter_clinician_only": "PV-CARE-TEAM-STEP", "final": "PV-ALREADY-FINAL", "already_closed": "PV-ALREADY-FINAL", "dependent_done": "PV-STEP-AFTER-DONE", "nothing_to_revoke": "PV-NOTHING-TO-REVOKE", "grant_needs_display_name": "PV-GRANT-NAMES-AGENT",
+                "grant_names_agent": "PV-GRANT-NAMES-AGENT", "job_id": "PV-JOB-NOT-FOUND", "not_done": "PV-NOT-DONE",
+                "grant_names_this_patient": "PV-ONLY-YOU", "result_value": "PV-RESULT-EMPTY"}
 MAX_FAILS = 3   # failed submissions in a row before the episode goes to the clinician queue
 DENY = {"patient": "RF-ROLE-CANCEL", "patient_agent": "RF-ROLE-CANCEL", "clinician": None,
         "clinician_agent": "RF-CLIN-AGENT"}
@@ -290,7 +294,7 @@ class OrdersEnv:
             if not (isinstance(e["agent"], str) and e["agent"].strip()):
                 return code("grant_names_agent")
             if t == "grant" and not (isinstance(e["agent_name"], str) and e["agent_name"].strip()
-                                     and e["agent_name"] != e["agent"] and not e["agent_name"].startswith("SYNTH-")):
+                                     and e["agent_name"] != e["agent"]):
                 return code("grant_needs_display_name")
             if e["patient"] != s.actor or self.patient not in (None, e["patient"]):
                 return code("grant_names_this_patient")
@@ -402,8 +406,8 @@ class OrdersEnv:
         return {"accepted": True}
 
     def _refuse(self, why):
-        if self.session.role == "patient" and why.startswith("ERR:"):
-            why = ""
+        if self.session.role == "patient" and why.startswith("ERR:") and why[4:] in PATIENT_LINE:
+            why = msg(PATIENT_LINE[why[4:]])      # patients get a signed line, never a code or a blank
         return {"accepted": False, "reason": why}
 
     def state(self):
