@@ -34,15 +34,17 @@ orders has no field for substitute decision-makers. Every event records the acto
 
 ## Interface
 
-`OrdersEnv` in `orders.py` is the agent environment:
+`OrdersEnv` in `orders.py` is the environment. A session (person or agent) reaches it only through `call(method, ...)`, and the per-call table `CALL_PERMS` allows only `observe` and `step`. Everything else belongs to the harness and is refused with "Refused: only the system running this session can start it again or replay it."
 
-- `reset(case_file, actor, role, episode_id, discipline=None, scope=())` opens a session on one list and episode.
-- `observe()` returns the current state, including the next job for this session.
-- `step(action)` passes the action through the gate (type, role, discipline) and appends it to the log, or refuses it with a fixed message.
-- `check(now=None)` is a deterministic checker with no model. With `now`, overdue jobs are flagged.
-- `replay(log, now=None)` rebuilds state from a log; the same log always gives the same state.
+- `reset(case_file, actor, role, episode_id, discipline=None, scope=())` (harness) opens a session on one list and episode.
+- `observe(item=None)` (session) shows only what the role may see: a patient's agent sees only agent-doable, non-safety jobs; a clinician's agent sees only lists approved inside its clinician's scope, and only jobs whose listed disciplines it holds. A refused read gets "Refused: you don't have access to this.", the same line whether or not the item exists.
+- `step(action)` (session) passes the action through the gate (type, role, discipline) and appends it to the log, or refuses it with a fixed line.
+- `step({"type": "submit", ...})` runs the check once and logs the submission with its result. A fail returns the missing items and the episode continues; only a pass is final. After 3 failed submissions in a row the episode goes to the clinician queue and agents are refused until a clinician sends `review`. A clinician can always finish in their own session.
+- `check()` (harness) is a deterministic checker with no model.
+- `replay(log)` (harness) rebuilds state from a log; the same log always gives the same state, and every logged submission result is recomputed.
+- `export()` (harness) refuses any episode whose id does not start with `SYNTH-`.
 
-Done, closed and open are separate. Exit codes: 0 all done, 3 closed (every job done or cancelled with a reason, and safety jobs cancelled only by a clinician), 1 open, 2 invalid or refused.
+The command line wraps the same calls. Done, closed and open are separate. Exit codes: 0 all done, 3 closed (every job done or cancelled with a reason, and safety jobs cancelled only by a clinician), 1 open, 2 invalid or refused.
 
 ## Quickstart
 
@@ -78,7 +80,7 @@ Contributors run pytest and `scripts/rulecheck.py` before every commit. Agent ru
 
 ## Status
 
-An MCP server is planned. There isn't one yet. All wording lines are signed; `WORDING.md` is the signed table.
+An MCP server is planned. There isn't one yet. All 58 wording lines are signed; `WORDING.md` is the signed table.
 
 ## Licence
 

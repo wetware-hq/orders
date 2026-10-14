@@ -15,15 +15,25 @@ LIST_KEYS = {"list_id", "version", "source_lines", "job", "record"}
 
 # ---- permission table: role -> actions. Refusal line when an action is not allowed. ----
 PERMS = {
-    "patient": {"tick", "untick", "next"},
-    "patient_agent": {"tick", "next"},
-    "clinician": {"tick", "untick", "cancel", "approve", "next"},
-    "clinician_agent": {"tick", "next"},
+    "patient": {"tick", "untick", "submit", "next"},
+    "patient_agent": {"tick", "submit", "next"},
+    "clinician": {"tick", "untick", "cancel", "approve", "submit", "review", "next"},
+    "clinician_agent": {"tick", "submit", "next"},
 }
+# ---- per-call permissions: env methods a session may call through call(). reset, replay, check and export
+# belong to the harness and are refused with RF-HARNESS-ONLY. ----
+CALL_PERMS = {
+    "patient": {"observe", "step"},
+    "patient_agent": {"observe", "step"},
+    "clinician": {"observe", "step"},
+    "clinician_agent": {"observe", "step"},
+}
+MAX_FAILS = 3   # failed submissions in a row before the episode goes to the clinician queue
 DENY = {"patient": "RF-ROLE-CANCEL", "patient_agent": "RF-ROLE-CANCEL", "clinician": None,
         "clinician_agent": "RF-CLIN-AGENT"}
 SCOPED_ACTIONS = {"tick", "cancel"}           # on safety_critical jobs: role + discipline checked together
-FIELDS = {"tick": {"id", "evidence"}, "untick": {"id"}, "cancel": {"id", "reason"}, "approve": set()}
+FIELDS = {"tick": {"id", "evidence"}, "untick": {"id"}, "cancel": {"id", "reason"}, "approve": set(),
+          "submit": set(), "review": set()}
 SESSION_KEYS = {"actor", "role", "discipline", "scope", "episode_id"}
 
 
@@ -143,7 +153,11 @@ class OrdersEnv:
         self.order = list(self.jobs)
         self.dependents = {i: [k for k in self.order if i in self.jobs[k]["depends_on"]] for i in self.order}
         self.done, self.cancelled, self.approver, self.log = set(), {}, None, []
+        self._clear_submissions()
         return self.observe()
+
+    def _clear_submissions(self):
+        self.submissions, self.fails, self.passed, self.missing = 0, 0, False, []
 
     def _waiting(self, i):
         return [d for d in self.jobs[i]["depends_on"] if d not in self.done]
@@ -173,9 +187,12 @@ class OrdersEnv:
         flags = [msg("FL-OVERDUE", job_text=self.jobs[i]["text"], owner=self.jobs[i]["owner"], time=self.jobs[i]["due"])
                  for i in self._open() if now and parse_due(self.jobs[i]["due"]) < now]
         status = msg("ST-DONE") if all_done else msg("ST-CLOSED") if closed else None
+        queue = [msg("CQ-THREE-FAILS", items=", ".join(self.jobs[i]["text"] for i in self.missing))] \
+            if self.fails >= MAX_FAILS else []
         return {"all_done": all_done, "closed": closed, "status": status, "done": sorted(self.done),
                 "cancelled": sorted(self.cancelled), "open": self._open(), "next": self.available(),
-                "blocked": blocked, "flags": flags}
+                "blocked": blocked, "flags": flags, "submissions": self.submissions, "final": self.passed,
+                "clinician_queue": queue}
 
     def exit_code(self, c):
         return 0 if c["all_done"] else 3 if c["closed"] else 1
@@ -185,10 +202,42 @@ class OrdersEnv:
         n = self.available()
         return [msg("PV-NEXT", plain=self.jobs[i]["text"]) for i in n] or [msg("PV-NOTHING-NEXT")]
 
-    def observe(self):
+    def visible(self, i=None):
+        """Read scope. A patient's agent sees only agent-doable, non-safety jobs. A clinician's agent sees only
+        lists its clinician's discipline approved, and only jobs whose listed disciplines it holds."""
+        s = self.session
+        if s.role == "clinician_agent":
+            if not in_scope(s, [self.approver] if self.approver else []):
+                return False
+            return i is None or "disciplines" not in self.jobs[i] or in_scope(s, self.jobs[i]["disciplines"])
+        if s.role == "patient_agent":
+            return i is None or (self.jobs[i]["agent_doable"] and not self.jobs[i]["safety_critical"])
+        return True
+
+    def observe(self, item=None):
+        """Refused reads get RF-NOT-YOURS, the same line whether or not the item exists."""
+        if not self.visible() or (item is not None and (item not in self.jobs or not self.visible(item))):
+            return {"accepted": False, "reason": msg("RF-NOT-YOURS")}
         c = self.check()
-        return {"episode_id": self.episode_id, "list_id": self.lst["list_id"], "open": c["open"],
-                "next": c["next"], "blocked": c["blocked"], "flags": c["flags"]}
+        if item is not None:
+            return {"accepted": True, "id": item, "text": self.jobs[item]["text"],
+                    "done": item in self.done, "cancelled": item in self.cancelled}
+        mine = [i for i in self.order if self.visible(i)]
+        return {"episode_id": self.episode_id, "list_id": self.lst["list_id"],
+                "open": [i for i in c["open"] if i in mine], "next": [i for i in c["next"] if i in mine],
+                "blocked": c["blocked"], "flags": c["flags"]}
+
+    def call(self, method, *args, **kw):
+        """The only entry point for a session (person or agent): observe and step. Everything else is harness-only."""
+        if method not in CALL_PERMS[self.session.role]:
+            return {"accepted": False, "reason": msg("RF-HARNESS-ONLY")}
+        return getattr(self, method)(*args, **kw)
+
+    def export(self):
+        """Harness-only. Refuses any episode not marked synthetic (episode id starting SYNTH-)."""
+        if not (isinstance(self.episode_id, str) and self.episode_id.startswith("SYNTH-")):
+            raise Invalid(msg("RF-EXPORT-REAL"))
+        return dict(self.check(), log=list(self.log))
 
     def _gate(self, e, s):
         t = e["type"]
@@ -202,6 +251,14 @@ class OrdersEnv:
             return code("already_approved") if self.approver is not None else None
         if self.approver is None:
             return msg("RF-NOT-APPROVED")
+        if self.passed:
+            return code("final")
+        if s.role in AGENTS and self.fails >= MAX_FAILS:
+            return msg("RF-WAIT-CLINICIAN")
+        if t == "review":
+            return None if self.fails >= MAX_FAILS else code("nothing_to_review")
+        if t == "submit":
+            return None
         if t == "cancel" and not (isinstance(e["reason"], str) and e["reason"].strip()):
             return msg("RF-CANCEL-REASON")
         if t == "tick" and not (isinstance(e["evidence"], str) and e["evidence"].strip()):
@@ -231,6 +288,13 @@ class OrdersEnv:
         t = e["type"]
         if t == "approve":
             self.approver = e["discipline"]
+        elif t == "submit":
+            self.submissions += 1
+            self.passed = e["result"] == "pass"
+            self.fails = 0 if self.passed else self.fails + 1
+            self.missing = e["missing"]
+        elif t == "review":
+            self.fails = 0
         elif t == "tick":
             self.done.add(e["id"])
         elif t == "untick":
@@ -243,6 +307,9 @@ class OrdersEnv:
                  episode_id=self.episode_id)
         if a["type"] == "approve":
             e["list_hash"] = self.hash
+        if a["type"] == "submit":
+            c = self.check()
+            e.update(result="pass" if c["status"] else "fail", missing=c["open"])
         return e
 
     def step(self, action):
@@ -266,6 +333,10 @@ class OrdersEnv:
             return self._refuse(why)
         self._apply(e)
         self.log.append(e)
+        if t == "submit":
+            if e["result"] == "pass":
+                return {"accepted": True, "result": msg("ST-CHECK-PASS"), "final": True}
+            return {"accepted": True, "result": msg("ST-CHECK-FAIL"), "final": False, "missing": self.check()["blocked"]}
         return {"accepted": True}
 
     def _refuse(self, why):
@@ -278,6 +349,7 @@ class OrdersEnv:
 
     def replay(self, log, now=None):
         self.done, self.cancelled, self.approver, self.log = set(), {}, None, []
+        self._clear_submissions()
         for e in log:
             if not isinstance(e, dict) or e.get("type") not in FIELDS or e.get("episode_id") != self.episode_id:
                 raise Invalid(code("log_event"))
@@ -315,8 +387,8 @@ def opts(rest):
 
 
 def main(argv):
-    """compile LIST | status LIST LOG EPISODE [--now 'YYYY-MM-DD HH:MM'] |
-    approve LIST LOG EPISODE ... | tick|untick|cancel LIST LOG EPISODE JOB --role R --actor A --ts ISO
+    """compile LIST | status|export LIST LOG EPISODE [--now 'YYYY-MM-DD HH:MM'] |
+    approve|submit|review LIST LOG EPISODE ... | tick|untick|cancel LIST LOG EPISODE JOB --role R --actor A --ts ISO
     [--discipline D] [--scope d1,d2] [--evidence RECORD_ID | --reason TEXT]
     Exit: 0 all done, 3 closed, 1 open, 2 invalid."""
     try:
@@ -326,9 +398,13 @@ def main(argv):
             for g in gap_view(load_list(pos[0])):
                 print(g)
             return 0
+        if cmd == "export" and len(pos) == 3:
+            env = OrdersEnv(); env.reset(pos[0], "export", "patient", pos[2]); env.replay(read_log(pos[1]))
+            print(json.dumps(env.export(), indent=1, ensure_ascii=False))
+            return 0
         if cmd == "status" and len(pos) == 3:
             env = OrdersEnv(); env.reset(pos[0], "status", "patient", pos[2])
-        elif cmd in FIELDS and len(pos) == (3 if cmd == "approve" else 4) and {"role", "actor", "ts"} <= set(o):
+        elif cmd in FIELDS and len(pos) == (3 if not FIELDS[cmd] else 4) and {"role", "actor", "ts"} <= set(o):
             env = OrdersEnv()
             env.reset(pos[0], o["actor"], o["role"], pos[2], o.get("discipline"),
                       tuple(x for x in o.get("scope", "").split(",") if x))
@@ -341,7 +417,7 @@ def main(argv):
             raise Invalid(msg("ER-BAD-COMMAND"))
         if cmd != "status":
             act = {"type": cmd, "ts": o["ts"]}
-            if cmd != "approve":
+            if FIELDS[cmd]:
                 act["id"] = pos[3]
             for k in ("evidence", "reason"):
                 if k in o:

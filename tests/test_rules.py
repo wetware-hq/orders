@@ -210,10 +210,10 @@ def test_roles_are_four_with_discipline():
 
 def test_permissions_table_by_role():
     assert O.PERMS == {
-        "patient": {"tick", "untick", "next"},
-        "patient_agent": {"tick", "next"},
-        "clinician": {"tick", "untick", "cancel", "approve", "next"},
-        "clinician_agent": {"tick", "next"}}
+        "patient": {"tick", "untick", "submit", "next"},
+        "patient_agent": {"tick", "submit", "next"},
+        "clinician": {"tick", "untick", "cancel", "approve", "submit", "review", "next"},
+        "clinician_agent": {"tick", "submit", "next"}}
     for role, allowed in O.PERMS.items():
         assert allowed <= set(O.FIELDS) | {"next"} and role in O.DENY
     assert "cancel" not in O.PERMS["clinician_agent"] and "approve" not in O.PERMS["clinician_agent"]
@@ -387,3 +387,127 @@ def test_s06_yes_no_fields_real_bool_accepted(k, v):
 def test_not_overdue_at_exact_due_time():
     flags = env().check("1936-05-02 15:00")["flags"]
     assert not any(f.startswith("Overdue: Patient leaves the ward") for f in flags)
+
+
+# ---- round 5 ----
+def act(t):
+    return {"type": t, "ts": TS}
+
+def fail_n(e, n):
+    for _ in range(n):
+        r = e.step(act("submit")); assert r["accepted"] and r["final"] is False
+
+def relog(e, role, discipline=None, scope=()):
+    return env(role, discipline, scope, approve=None, log=e.log)
+
+AGENT_ROLES = [("patient_agent", None, ()), ("clinician_agent", None, ("medicine",))]
+ALL_ROLES = AGENT_ROLES + [("patient", None, ()), ("clinician", "medicine", ())]
+
+def test_r5_01_call_permissions_table():
+    assert O.CALL_PERMS == {r: {"observe", "step"} for r in ("patient", "patient_agent", "clinician", "clinician_agent")}
+
+@pytest.mark.parametrize("role,disc,scope", ALL_ROLES)
+@pytest.mark.parametrize("method", ["reset", "replay", "check", "export", "state"])
+def test_r5_01_harness_only_calls_refused(role, disc, scope, method):
+    e = env(role, disc, scope); n = len(e.log)
+    assert e.call(method, []) == {"accepted": False, "reason": msg("RF-HARNESS-ONLY")} and len(e.log) == n
+
+@pytest.mark.parametrize("role,disc,scope", AGENT_ROLES)
+def test_r5_01_agents_may_observe_and_step(role, disc, scope):
+    e = env(role, disc, scope)
+    assert e.call("observe")["list_id"] and e.call("step", tick("book_followup"))["accepted"]
+
+def test_r5_02_failed_submission_continues_and_is_logged():
+    e = env(); r = e.step(act("submit"))
+    assert r == {"accepted": True, "result": msg("ST-CHECK-FAIL"), "final": False, "missing": e.check()["blocked"]}
+    assert e.log[-1]["result"] == "fail" and e.log[-1]["missing"] == ORDER
+    assert e.step(tick("review_meds"))["accepted"] and e.check()["submissions"] == 1
+
+def test_r5_02_pass_is_final():
+    e = env()
+    for i in ORDER:
+        assert e.step(tick(i))["accepted"]
+    assert e.step(act("submit")) == {"accepted": True, "result": msg("ST-CHECK-PASS"), "final": True}
+    assert e.check()["final"] and e.step({"type": "untick", "id": "discharge", "ts": TS})["accepted"] is False
+
+def test_r5_02_closed_counts_as_pass():
+    e = env()
+    for i in ORDER[:-1]:
+        e.step(tick(i))
+    e.step(cancel("discharge"))
+    assert e.step(act("submit"))["final"] is True
+
+@pytest.mark.parametrize("role,disc,scope", ALL_ROLES)
+def test_r5_02_every_role_may_submit(role, disc, scope):
+    e = env(role, disc, scope); assert e.step(act("submit"))["accepted"] and e.log[-1]["role"] == role
+
+def test_r5_02_three_fails_queue_and_wait():
+    e = env("clinician_agent", scope=("medicine",)); fail_n(e, 2)
+    assert e.check()["clinician_queue"] == [] and e.step(tick("book_followup"))["accepted"]
+    fail_n(e, 1)
+    texts = ", ".join(e.jobs[i]["text"] for i in ORDER if i != "book_followup")
+    assert e.check()["clinician_queue"] == [msg("CQ-THREE-FAILS", items=texts)]
+    for a in (act("submit"), tick("write_summary")):
+        assert e.step(a) == {"accepted": False, "reason": msg("RF-WAIT-CLINICIAN")}
+    assert e.check()["submissions"] == 3
+
+def test_r5_02_clinician_review_unblocks_and_clinician_can_finish():
+    e = env("patient_agent"); fail_n(e, 3)
+    c = relog(e, "clinician", "medicine")
+    assert c.step(tick("review_meds"))["accepted"]                 # a clinician can always finish
+    assert c.step(act("review"))["accepted"] and c.check()["clinician_queue"] == []
+    assert relog(c, "patient_agent").step(act("submit"))["accepted"]
+    assert env().step(act("review"))["reason"] == "ERR:nothing_to_review"
+    assert relog(e, "patient").step(act("review"))["accepted"] is False
+
+def test_r5_02_submission_result_cannot_be_forged_and_replays():
+    e = env(); assert e.step(dict(act("submit"), result="pass"))["accepted"] is False
+    e.step(act("submit")); assert relog(e, "patient").log == e.log
+    bad = [dict(x) for x in e.log]; bad[-1]["result"] = "pass"
+    with pytest.raises(Invalid):
+        env(approve=None, log=bad)
+
+def test_r5_03_observe_patient_sees_whole_list():
+    e = env("patient"); assert e.observe()["open"] == ORDER and e.observe("review_meds")["accepted"]
+
+def test_r5_03_observe_patient_agent_only_agent_doable_jobs():
+    e = env("patient_agent")
+    assert e.observe()["open"] == ["write_summary", "book_followup", "send_summary"]
+    assert e.observe()["next"] == ["book_followup"]
+    assert e.observe("review_meds") == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
+    assert e.observe("book_followup")["accepted"]
+
+def test_r5_03_observe_clinician_sees_all():
+    e = env("clinician", "nursing", approve="medicine"); assert e.observe()["open"] == ORDER
+
+def test_r5_03_observe_clinician_agent_only_its_scope():
+    d = copy.deepcopy(L); d["job"][3]["disciplines"] = ["nursing"]
+    e = env("clinician_agent", scope=("medicine",), case=d)
+    assert "remove_cannula" not in e.observe()["open"] and e.observe("remove_cannula")["reason"] == msg("RF-NOT-YOURS")
+    assert e.observe("review_meds")["accepted"]
+    assert env("clinician_agent", scope=("nursing",)).observe() == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
+    assert env("clinician_agent", scope=("nursing",), case=d).observe("remove_cannula")["reason"] == msg("RF-NOT-YOURS")
+
+def test_r5_03_not_yours_does_not_reveal_existence():
+    e = env("patient_agent")
+    assert e.observe("review_meds") == e.observe("no_such_job") == env("clinician").observe("no_such_job")
+
+def test_r5_04_export_refuses_real_episode():
+    with pytest.raises(Invalid) as x:
+        env(ep="EP-0001").export()
+    assert str(x.value) == msg("RF-EXPORT-REAL")
+    assert env().export()["log"]
+
+def test_r5_04_cli_export_refuses_real_episode(tmp_path, capsys):
+    log = str(tmp_path / "l.jsonl"); open(log, "w").close()
+    assert O.main(["o", "export", EX, log, "EP-1"]) == 2 and capsys.readouterr().err.strip() == msg("RF-EXPORT-REAL")
+    assert O.main(["o", "export", EX, log, "SYNTH-EP-1"]) == 0
+
+def test_unapproved_list_blocked_line_first():
+    assert env(approve=None).check()["blocked"][0] == msg("RF-NOT-APPROVED")
+    assert msg("RF-NOT-APPROVED") not in env().check()["blocked"]
+
+def test_r5_03_observe_item_shows_done_and_cancelled():
+    e = env(); e.step(tick("book_followup")); e.step(cancel("teach_meds"))
+    assert e.observe("book_followup")["done"] is True and e.observe("book_followup")["cancelled"] is False
+    assert e.observe("teach_meds")["cancelled"] is True and e.observe("teach_meds")["done"] is False
