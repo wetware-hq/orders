@@ -197,7 +197,8 @@ class OrdersEnv:
         status = msg("ST-DONE") if all_done else msg("ST-CLOSED") if closed else None
         queue = [msg("CQ-THREE-FAILS", items="; ".join(f"{self.order.index(i) + 1}. {self.jobs[i]['text']}" for i in self.missing))] \
             if self.fails >= MAX_FAILS else []
-        return {"all_done": all_done, "closed": closed, "status": status, "done": sorted(self.done),
+        checked = msg("ST-CHECK-PASS") if self.passed else msg("ST-CHECK-FAIL") if self.submissions else None
+        return {"all_done": all_done, "closed": closed, "status": status, "checked": checked, "done": sorted(self.done),
                 "cancelled": sorted(self.cancelled), "open": self._open(), "next": self.available(),
                 "blocked": blocked, "flags": flags, "submissions": self.submissions, "final": self.passed,
                 "clinician_queue": queue}

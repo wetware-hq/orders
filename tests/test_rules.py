@@ -984,3 +984,17 @@ def test_r11_refuse_passes_unmapped_codes_through_unchanged():
     p = env("patient")
     assert p._refuse("ERR:zzz_unmapped") == {"accepted": False, "reason": "ERR:zzz_unmapped"}
     assert p._refuse(msg("RF-NOT-YOURS")) == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
+
+
+def test_check_reports_the_full_submission_status():
+    """The checker carries the full submission status (no cut at ':'): none before, ST-CHECK-FAIL, then ST-CHECK-PASS."""
+    import os, re
+    raw = (pathlib.Path(os.environ.get("STACK_SIBLINGS_DIR") or ROOT.parent) / "wording" / "forms_orders_lines_SIGNED.md").read_text()
+    signed = lambda lid: re.search(rf"^\| {lid} \|(?:.*\|)? (.*) \|$", raw, re.M).group(1)
+    e = env()
+    assert e.check()["checked"] is None
+    e.step(act("submit")); assert e.check()["checked"] == msg("ST-CHECK-FAIL") == signed("ST-CHECK-FAIL")
+    for i in ORDER:
+        e.step(tick(i))
+    e.step(act("submit")); assert e.check()["checked"] == msg("ST-CHECK-PASS") == signed("ST-CHECK-PASS")
+    assert e.check()["status"] == msg("ST-DONE")
