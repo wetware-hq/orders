@@ -72,7 +72,7 @@ def test_cancelled_never_counts_as_done():
         e.step(tick(i))
     c = e.check()
     assert "book_followup" not in c["done"] and not c["all_done"]
-    assert e.step(tick("discharge"))["reason"] == msg("RF-WAITING", job_text="Book follow-up clinic")
+    assert e.step(tick("discharge"))["reason"] == msg("WT-WAITING", job_text="Book follow-up clinic")
 
 def test_only_clinician_cancels_safety_critical():
     assert env("patient").step(cancel("remove_cannula"))["reason"] == msg("RF-ROLE-CANCEL")
@@ -122,7 +122,7 @@ def test_state_from_replay_only(tmp_path):
     assert e.state() == (("review_meds",), (), "medicine")
 
 def test_tick_waits_for_dependencies():
-    assert env().step(tick("write_summary"))["reason"] == msg("RF-WAITING", job_text="Review discharge medicines")
+    assert env().step(tick("write_summary"))["reason"] == msg("WT-WAITING", job_text="Review discharge medicines")
 
 def test_untick_blocked_by_done_dependent():
     e = env(); e.step(tick("review_meds")); e.step(tick("teach_meds"))
@@ -301,8 +301,8 @@ def test_line_rf_person_job():
 def test_line_rf_evidence():
     assert env().step(tick("review_meds", ""))["reason"] == "Refused: a tick needs a record id, such as a result or a sent document."
 
-def test_line_rf_waiting():
-    assert env().step(tick("send_summary"))["reason"] == "Refused: this job waits on Write discharge summary, which is not done yet."
+def test_line_wt_waiting():
+    assert env().step(tick("send_summary"))["reason"] == "Waiting: this job can start once Write discharge summary is done."
 
 def test_line_rf_cancel_reason():
     assert env().step({"type": "cancel", "id": "discharge", "ts": TS})["reason"] == "Refused: cancelling needs a reason."

@@ -166,7 +166,7 @@ class OrdersEnv:
         now = parse_due(now) if now else None
         all_done = len(self.done) == len(self.order)
         closed = not all_done and all(i in self.done or self._closed_ok(i) for i in self.order)
-        blocked = [msg("RF-WAITING", job_text=self.jobs[self._waiting(i)[0]]["text"])
+        blocked = [msg("WT-WAITING", job_text=self.jobs[self._waiting(i)[0]]["text"])
                    for i in self._open() if self._waiting(i)]
         if self.approver is None:
             blocked.insert(0, msg("RF-NOT-APPROVED"))
@@ -220,7 +220,7 @@ class OrdersEnv:
             if i in self.done or i in self.cancelled:
                 return code("already_closed")
             w = self._waiting(i)
-            return msg("RF-WAITING", job_text=self.jobs[w[0]]["text"]) if w else None
+            return msg("WT-WAITING", job_text=self.jobs[w[0]]["text"]) if w else None
         if t == "untick":
             if i not in self.done:
                 return code("not_done")
