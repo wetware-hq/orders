@@ -16,22 +16,36 @@ ORDER = ["review_meds", "write_summary", "book_followup", "remove_cannula", "tea
 REC = "SYNTH-REC-0001"
 
 def approval(case=EX, disc="medicine", ep=EP):
-    a = O.OrdersEnv(); a.reset(case, "SYNTH-dr-01", "clinician", ep, disc)
-    assert a.step({"type": "approve", "ts": TS})["accepted"]
+    a = O.OrdersEnv(); a.reset(case, "SYNTH-dr-01", "clinician", ep, disc); a.open_episode(True, TS)
+    assert a.step({"type": "approve", "timestamp": TS})["accepted"]
     return a.log
 
-def env(role="clinician", discipline="medicine", scope=(), case=EX, ep=EP, approve="medicine", log=None):
+AGENT, PATIENT = "SYNTH-person-01", "SYNTH-pt-01"
+
+def grant_ev(t="grant", agent=AGENT, patient=PATIENT, ts=TS):
+    return {"type": t, "timestamp": ts, "agent": agent, "patient": patient}
+
+def granted(log, case=EX, ep=EP):
+    p = O.OrdersEnv(); p.reset(case, PATIENT, "patient", ep); p.replay(log)
+    assert p.step(grant_ev())["accepted"]
+    return p.log
+
+def env(role="clinician", discipline="medicine", scope=(), case=EX, ep=EP, approve="medicine", log=None, grant=None):
     if role != "clinician":
         discipline = None
-    e = O.OrdersEnv(); e.reset(case, "SYNTH-person-01", role, ep, discipline, scope)
-    e.replay((approval(case, approve, ep) if approve else []) + (log or []))
+    base = approval(case, approve, ep) if approve else []
+    if approve and (grant if grant is not None else role == "patient_agent"):
+        base = granted(base, case, ep)
+    actor = PATIENT if role == "patient" else AGENT
+    e = O.OrdersEnv(); e.reset(case, actor, role, ep, discipline, scope)
+    e.replay(base + (log or []))
     return e
 
 def tick(i, ev=REC):
-    return {"type": "tick", "id": i, "ts": TS, "evidence": ev}
+    return {"type": "tick", "id": i, "timestamp": TS, "evidence": ev}
 
 def cancel(i, reason="SYNTH reason"):
-    return {"type": "cancel", "id": i, "ts": TS, "reason": reason}
+    return {"type": "cancel", "id": i, "timestamp": TS, "reason": reason}
 
 def bad(fn):
     d = copy.deepcopy(L); fn(d)
@@ -57,13 +71,13 @@ def test_job_fields_owner_due_safety():
 
 def test_tick_requires_evidence():
     e = env(); n = len(e.log)
-    for a in ({"type": "tick", "id": "review_meds", "ts": TS}, tick("review_meds", "  ")):
+    for a in ({"type": "tick", "id": "review_meds", "timestamp": TS}, tick("review_meds", "  ")):
         assert e.step(a)["reason"] == msg("RF-EVIDENCE")
     assert len(e.log) == n
 
 def test_cancel_requires_reason():
     e = env()
-    assert e.step({"type": "cancel", "id": "book_followup", "ts": TS})["reason"] == msg("RF-CANCEL-REASON")
+    assert e.step({"type": "cancel", "id": "book_followup", "timestamp": TS})["reason"] == msg("RF-CANCEL-REASON")
     assert e.step(cancel("book_followup", " "))["reason"] == msg("RF-CANCEL-REASON")
 
 def test_cancelled_never_counts_as_done():
@@ -112,7 +126,7 @@ def test_log_append_only(tmp_path):
     t = log.read_text()
     assert t.startswith(first) and len(t.splitlines()) == 2
     ev = json.loads(t.splitlines()[1])
-    assert ev["id"] == "review_meds" and ev["actor"] == "SYNTH-dr-01" and ev["ts"] == TS
+    assert ev["id"] == "review_meds" and ev["actor"] == "SYNTH-dr-01" and ev["timestamp"] == TS
 
 def test_state_from_replay_only(tmp_path):
     log = tmp_path / "l.jsonl"
@@ -126,9 +140,9 @@ def test_tick_waits_for_dependencies():
 
 def test_untick_blocked_by_done_dependent():
     e = env(); e.step(tick("review_meds")); e.step(tick("teach_meds"))
-    assert e.step({"type": "untick", "id": "review_meds", "ts": TS})["reason"] == "ERR:dependent_done"
-    assert e.step({"type": "untick", "id": "teach_meds", "ts": TS})["accepted"]
-    assert e.step({"type": "untick", "id": "review_meds", "ts": TS})["accepted"]
+    assert e.step({"type": "untick", "id": "review_meds", "timestamp": TS})["reason"] == "ERR:dependent_done"
+    assert e.step({"type": "untick", "id": "teach_meds", "timestamp": TS})["accepted"]
+    assert e.step({"type": "untick", "id": "review_meds", "timestamp": TS})["accepted"]
 
 def test_status_exit_codes(tmp_path):
     log = tmp_path / "l.jsonl"
@@ -149,7 +163,7 @@ def test_status_shows_next_jobs(tmp_path, capsys):
 
 def test_rejected_actions_not_logged():
     e = env(); n = len(e.log)
-    for a in ({"type": "erase"}, tick("ghost"), {"type": "tick", "id": "review_meds", "ts": 1936, "evidence": REC}):
+    for a in ({"type": "erase"}, tick("ghost"), {"type": "tick", "id": "review_meds", "timestamp": 1936, "evidence": REC}):
         assert not e.step(a)["accepted"]
     assert len(e.log) == n
 
@@ -210,10 +224,10 @@ def test_roles_are_four_with_discipline():
 
 def test_permissions_table_by_role():
     assert O.PERMS == {
-        "patient": {"tick", "untick", "submit", "next"},
-        "patient_agent": {"tick", "submit", "next"},
-        "clinician": {"tick", "untick", "cancel", "approve", "submit", "review", "next"},
-        "clinician_agent": {"tick", "submit", "next"}}
+        "patient": {"tick", "untick", "result", "grant", "revoke", "submit", "next"},
+        "patient_agent": {"tick", "result", "submit", "next"},
+        "clinician": {"tick", "untick", "cancel", "result", "approve", "submit", "review", "next"},
+        "clinician_agent": {"tick", "result", "submit", "next"}}
     for role, allowed in O.PERMS.items():
         assert allowed <= set(O.FIELDS) | {"next"} and role in O.DENY
     assert "cancel" not in O.PERMS["clinician_agent"] and "approve" not in O.PERMS["clinician_agent"]
@@ -243,7 +257,7 @@ def test_unregistered_role_refused():
 def test_clinician_agent_rules():
     a = env("clinician_agent", scope=("medicine",))
     assert a.step(cancel("book_followup"))["reason"] == msg("RF-CLIN-AGENT")
-    assert a.step({"type": "approve", "ts": TS})["reason"] == msg("RF-CLIN-AGENT")
+    assert a.step({"type": "approve", "timestamp": TS})["reason"] == msg("RF-CLIN-AGENT")
     assert a.step(tick("review_meds"))["reason"] == msg("RF-PERSON-JOB")
     assert a.step(tick("book_followup", "SYNTH-made-up"))["reason"] == msg("RF-EVIDENCE-NOT-FOUND")
     assert a.step(tick("book_followup"))["accepted"]
@@ -305,7 +319,7 @@ def test_line_wt_waiting():
     assert env().step(tick("send_summary"))["reason"] == "Waiting: this job can start once Write discharge summary is done."
 
 def test_line_rf_cancel_reason():
-    assert env().step({"type": "cancel", "id": "discharge", "ts": TS})["reason"] == "Refused: cancelling needs a reason."
+    assert env().step({"type": "cancel", "id": "discharge", "timestamp": TS})["reason"] == "Refused: cancelling needs a reason."
 
 def test_line_rf_not_approved():
     assert env(approve=None).step(tick("review_meds"))["reason"] == "Refused: this form or list is not approved by a clinician yet."
@@ -361,7 +375,7 @@ def test_line_rf_clin_agent():
 
 def test_untick_and_cancel_need_right_state():
     e = env()
-    assert e.step({"type": "untick", "id": "book_followup", "ts": TS})["reason"] == "ERR:not_done"
+    assert e.step({"type": "untick", "id": "book_followup", "timestamp": TS})["reason"] == "ERR:not_done"
     e.step(tick("book_followup"))
     assert e.step(cancel("book_followup"))["reason"] == "ERR:already_closed"
     e.step(cancel("write_summary"))
@@ -391,7 +405,7 @@ def test_not_overdue_at_exact_due_time():
 
 # ---- round 5 ----
 def act(t):
-    return {"type": t, "ts": TS}
+    return {"type": t, "timestamp": TS}
 
 def fail_n(e, n):
     for _ in range(n):
@@ -428,7 +442,7 @@ def test_r5_02_pass_is_final():
     for i in ORDER:
         assert e.step(tick(i))["accepted"]
     assert e.step(act("submit")) == {"accepted": True, "result": msg("ST-CHECK-PASS"), "final": True}
-    assert e.check()["final"] and e.step({"type": "untick", "id": "discharge", "ts": TS})["accepted"] is False
+    assert e.check()["final"] and e.step({"type": "untick", "id": "discharge", "timestamp": TS})["accepted"] is False
 
 def test_r5_02_closed_counts_as_pass():
     e = env()
@@ -445,7 +459,7 @@ def test_r5_02_three_fails_queue_and_wait():
     e = env("clinician_agent", scope=("medicine",)); fail_n(e, 2)
     assert e.check()["clinician_queue"] == [] and e.step(tick("book_followup"))["accepted"]
     fail_n(e, 1)
-    texts = ", ".join(e.jobs[i]["text"] for i in ORDER if i != "book_followup")
+    texts = "; ".join(f"{n}. {e.jobs[i]['text']}" for n, i in enumerate(ORDER, 1) if i != "book_followup")
     assert e.check()["clinician_queue"] == [msg("CQ-THREE-FAILS", items=texts)]
     for a in (act("submit"), tick("write_summary")):
         assert e.step(a) == {"accepted": False, "reason": msg("RF-WAIT-CLINICIAN")}
@@ -492,16 +506,152 @@ def test_r5_03_not_yours_does_not_reveal_existence():
     e = env("patient_agent")
     assert e.observe("review_meds") == e.observe("no_such_job") == env("clinician").observe("no_such_job")
 
-def test_r5_04_export_refuses_real_episode():
-    with pytest.raises(Invalid) as x:
-        env(ep="EP-0001").export()
-    assert str(x.value) == msg("RF-EXPORT-REAL")
-    assert env().export()["log"]
+def opened(synthetic, ep=EP):
+    e = O.OrdersEnv(); e.reset(EX, "SYNTH-dr-01", "clinician", ep, "medicine"); e.open_episode(synthetic, TS)
+    assert e.step({"type": "approve", "timestamp": TS})["accepted"]
+    return e
 
-def test_r5_04_cli_export_refuses_real_episode(tmp_path, capsys):
+def test_r8_01_export_needs_synthetic_flag_not_id():
+    e = env(approve=None, log=[x for x in opened(True).log if x["type"] != "open"])
+    with pytest.raises(Invalid) as x:
+        e.export()
+    assert str(x.value) == msg("RF-EXPORT-REAL")
+    with pytest.raises(Invalid) as x:
+        opened(False).export()
+    assert str(x.value) == msg("RF-EXPORT-REAL")
+    assert opened(True, "EP-0001").export()["synthetic"] is True     # the field decides, never the id
+
+def test_r8_01_flag_set_once_first_and_never_changed():
+    e = opened(True)
+    for v in (True, False):
+        with pytest.raises(Invalid):
+            e.open_episode(v, TS)
+    for v in (1, "true", None):
+        f = O.OrdersEnv(); f.reset(EX, "SYNTH-x", "patient", EP)
+        with pytest.raises(Invalid):
+            f.open_episode(v, TS)
+
+@pytest.mark.parametrize("change", ["second_open", "flip", "not_first", "extra_key", "other_episode"])
+def test_r8_01_replay_refuses_changed_flag(change):
+    log = [dict(x) for x in opened(False).log]
+    if change == "second_open":
+        log.append(dict(log[0], synthetic=True))
+    elif change == "flip":
+        log.insert(1, dict(log[0], synthetic=True))
+    elif change == "not_first":
+        log = log[1:] + log[:1]
+    elif change == "extra_key":
+        log[0]["actor"] = "SYNTH-x"
+    else:
+        log[0]["episode_id"] = "SYNTH-EP-9"
+    with pytest.raises(Invalid):
+        env(approve=None, log=log)
+
+@pytest.mark.parametrize("role,disc,scope", ALL_ROLES)
+def test_r8_01_only_harness_sets_flag(role, disc, scope):
+    e = env(role, disc, scope); n = len(e.log)
+    assert e.call("open_episode", True, TS) == {"accepted": False, "reason": msg("RF-HARNESS-ONLY")}
+    assert e.step({"type": "open", "synthetic": True, "timestamp": TS})["accepted"] is False and len(e.log) == n
+
+def test_r8_01_cli_open_and_export(tmp_path, capsys):
     log = str(tmp_path / "l.jsonl"); open(log, "w").close()
-    assert O.main(["o", "export", EX, log, "EP-1"]) == 2 and capsys.readouterr().err.strip() == msg("RF-EXPORT-REAL")
-    assert O.main(["o", "export", EX, log, "SYNTH-EP-1"]) == 0
+    assert O.main(["o", "export", EX, log, "SYNTH-EP-1"]) == 2 and capsys.readouterr().err.strip() == msg("RF-EXPORT-REAL")
+    assert O.main(["o", "open", EX, log, "SYNTH-EP-1", "--synthetic", "yes", "--ts", TS]) == 2
+    assert O.main(["o", "open", EX, log, "SYNTH-EP-1", "--synthetic", "true", "--ts", TS]) == 0
+    assert O.main(["o", "open", EX, log, "SYNTH-EP-1", "--synthetic", "false", "--ts", TS]) == 2
+    assert O.main(["o", "export", EX, log, "SYNTH-EP-1"]) == 0 and json.loads(capsys.readouterr().out)["synthetic"] is True
+
+# ---- grants on lists ----
+def test_r8_02_patient_agent_without_grant_sees_and_does_nothing():
+    e = env("patient_agent", grant=False)
+    assert e.observe() == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
+    assert e.observe("book_followup") == e.observe("no_such_job")
+    assert e.step(tick("book_followup")) == {"accepted": False, "reason": msg("RF-NO-GRANT-LIST")}
+    assert e.step(act("submit"))["reason"] == msg("RF-NO-GRANT-LIST")
+
+def test_r8_02_grant_shows_only_agent_doable_non_safety_jobs():
+    e = env("patient_agent")
+    assert e.observe()["open"] == ["write_summary", "book_followup", "send_summary"]
+    assert e.observe("review_meds")["reason"] == msg("RF-NOT-YOURS") and e.step(tick("book_followup"))["accepted"]
+
+def test_r8_02_grant_names_agent_and_patient():
+    p = env("patient", approve="medicine")
+    assert p.step(grant_ev(agent=""))["accepted"] is False
+    assert p.step(grant_ev(patient="SYNTH-pt-99"))["accepted"] is False
+    assert p.step(grant_ev())["accepted"] and p.log[-1]["agent"] == AGENT and p.log[-1]["patient"] == PATIENT
+    q = O.OrdersEnv(); q.reset(EX, "SYNTH-pt-99", "patient", EP); q.replay(p.log)
+    assert q.step(grant_ev(agent="SYNTH-agent-09", patient="SYNTH-pt-99"))["accepted"] is False
+
+def test_r8_02_other_agent_not_covered():
+    e = env("patient_agent")
+    o = O.OrdersEnv(); o.reset(EX, "SYNTH-agent-02", "patient_agent", EP); o.replay(e.log)
+    assert o.step(tick("book_followup"))["reason"] == msg("RF-NO-GRANT-LIST")
+    assert o.observe()["reason"] == msg("RF-NOT-YOURS")
+
+def test_r8_02_only_patient_grants():
+    for role, disc, scope in (("clinician", "medicine", ()), ("clinician_agent", None, ("medicine",)), ("patient_agent", None, ())):
+        e = env(role, disc, scope); n = len(e.log)
+        assert e.step(grant_ev())["accepted"] is False and e.step(grant_ev("revoke"))["accepted"] is False and len(e.log) == n
+
+def test_r8_02_revoke_works_the_same_way():
+    e = env("patient_agent")
+    p = env("patient", approve=None, log=e.log)
+    assert p.step(grant_ev("revoke", agent="SYNTH-agent-02"))["accepted"] is False
+    assert p.step(grant_ev("revoke", ts="1936-05-03T09:00"))["accepted"]
+    assert p.step(grant_ev("revoke"))["accepted"] is False
+    a = env("patient_agent", approve=None, log=p.log)
+    assert a.step(tick("book_followup")) == {"accepted": False, "reason": msg("RF-REVOKED", date="1936-05-03")}
+    assert a.observe()["reason"] == msg("RF-NOT-YOURS")
+    assert p.next_view()[0] == msg("PV-REVOKE-LIST", date="1936-05-03")
+
+def test_r8_02_patient_sees_grant_line():
+    e = env("patient_agent")
+    p = env("patient", approve=None, log=e.log)
+    assert p.next_view()[0] == msg("PV-GRANT-LIST", date="1936-05-02")
+    assert env("patient").next_view()[0] != msg("PV-GRANT-LIST", date="1936-05-02")
+
+def test_r8_02_cli_grant_names_agent(tmp_path):
+    log = str(tmp_path / "l.jsonl")
+    with open(log, "w") as f:
+        f.writelines(json.dumps(x) + "\n" for x in approval())
+    base = ["o", "grant", EX, log, EP, "--role", "patient", "--actor", PATIENT, "--ts", TS]
+    assert O.main(base) == 2 and O.main(base + ["--agent", AGENT]) == 1
+    assert O.read_log(log)[-1]["agent"] == AGENT
+
+# ---- queue text ----
+def test_r8_03_queue_lists_number_and_text():
+    e = env(); fail_n(e, 3)
+    want = "; ".join(f"{n}. {e.jobs[i]['text']}" for n, i in enumerate(ORDER, 1))
+    assert e.check()["clinician_queue"] == [msg("CQ-THREE-FAILS", items=want)]
+
+# ---- interpreter ----
+def test_r8_04_interpreter_clinician_only():
+    c = env(); assert c.step(dict(tick("review_meds"), interpreter=True))["accepted"] and c.log[-1]["interpreter"] is True
+    for role, disc, scope in (("patient", None, ()), ("patient_agent", None, ()), ("clinician_agent", None, ("medicine",))):
+        e = env(role, disc, scope); n = len(e.log)
+        assert e.step(dict(tick("book_followup"), interpreter=False))["accepted"] is False and len(e.log) == n
+
+@pytest.mark.parametrize("v", [1, 0, "true", None])
+def test_r8_04_interpreter_strict_bool(v):
+    assert env().step(dict(tick("review_meds"), interpreter=v)) == {"accepted": False, "reason": msg("RF-NOT-BOOL")}
+
+def test_r8_04_interpreter_only_on_tick():
+    assert env().step(dict(cancel("book_followup"), interpreter=True))["accepted"] is False
+
+def test_r8_04_export_carries_interpreter_and_replays(tmp_path, capsys):
+    e = opened(True); e.step(dict(tick("review_meds"), interpreter=True)); e.step(tick("book_followup"))
+    assert e.export()["interpreter"] == {"review_meds": True, "book_followup": False}
+    e.step({"type": "untick", "id": "book_followup", "timestamp": TS})
+    assert e.export()["interpreter"] == {"review_meds": True}
+    f = env(approve=None, log=e.log); assert f.export()["interpreter"] == {"review_meds": True}
+    log = str(tmp_path / "l.jsonl")
+    with open(log, "w") as fh:
+        fh.writelines(json.dumps(x) + "\n" for x in e.log[:2])
+    assert cli(log, "tick", "review_meds", evidence=REC, interpreter="true") == 1; capsys.readouterr()
+    assert cli(log, "tick", "book_followup", evidence=REC, interpreter="yes") == 2
+    assert O.main(["o", "export", EX, log, EP]) == 0
+    assert json.loads(capsys.readouterr().out)["interpreter"] == {"review_meds": True}
+
 
 def test_unapproved_list_blocked_line_first():
     assert env(approve=None).check()["blocked"][0] == msg("RF-NOT-APPROVED")
@@ -511,3 +661,64 @@ def test_r5_03_observe_item_shows_done_and_cancelled():
     e = env(); e.step(tick("book_followup")); e.step(cancel("teach_meds"))
     assert e.observe("book_followup")["done"] is True and e.observe("book_followup")["cancelled"] is False
     assert e.observe("teach_meds")["cancelled"] is True and e.observe("teach_meds")["done"] is False
+
+
+# ---- record a result on a job ----
+def result(i, v="SYNTH result: within range"):
+    return {"type": "result", "id": i, "value": v, "timestamp": TS}
+
+@pytest.mark.parametrize("role,disc,scope", ALL_ROLES)
+def test_r8_08_result_recorded_via_step_and_logged(role, disc, scope):
+    e = env(role, disc, scope); n = len(e.log)
+    assert e.call("step", result("book_followup"))["accepted"]
+    assert len(e.log) == n + 1 and e.log[-1]["type"] == "result" and e.log[-1]["role"] == role
+    assert e.results["book_followup"][0]["value"] == "SYNTH result: within range"
+
+def test_r8_08_results_append_and_replay():
+    e = env(); e.step(result("review_meds", "SYNTH first")); e.step(tick("review_meds")); e.step(result("review_meds", "SYNTH second"))
+    f = env(approve=None, log=e.log)
+    assert [r["value"] for r in f.results["review_meds"]] == ["SYNTH first", "SYNTH second"] and f.log == e.log
+    bad = [dict(x) for x in e.log]; bad[-1]["value"] = ""
+    with pytest.raises(Invalid):
+        env(approve=None, log=bad)
+
+@pytest.mark.parametrize("v", ["", "   ", None, 7, True, "x" * 501])
+def test_r8_08_result_value_must_be_text(v):
+    e = env(); n = len(e.log)
+    assert e.step(result("book_followup", v))["accepted"] is False and len(e.log) == n
+    assert e.step(result("book_followup", "x" * 500))["accepted"]
+
+def test_r8_08_result_refusals():
+    assert env("patient_agent").step(result("review_meds"))["reason"] == msg("RF-PERSON-JOB")
+    assert env("clinician_agent", scope=("medicine",)).step(result("teach_meds"))["reason"] == msg("RF-PERSON-JOB")
+    d = copy.deepcopy(L); d["job"][1]["safety_critical"] = True
+    assert env("patient_agent", case=d).step(result("write_summary"))["reason"] == msg("RF-NOT-YOURS")
+    assert env("patient_agent", grant=False).step(result("book_followup"))["reason"] == msg("RF-NO-GRANT-LIST")
+    assert env("clinician", "nursing").step(result("review_meds"))["reason"] == msg("RF-SCOPE", disciplines="medicine")
+    assert env(approve=None).step(result("book_followup"))["reason"] == msg("RF-NOT-APPROVED")
+    assert env().step(result("ghost"))["reason"] == "ERR:job_id"
+    c = env(); c.step(cancel("book_followup")); assert c.step(result("book_followup"))["reason"] == "ERR:already_closed"
+    assert env().step({"type": "result", "id": "book_followup", "timestamp": TS})["accepted"] is False
+
+def test_r8_08_export_carries_results_and_cli(tmp_path, capsys):
+    e = opened(True); e.step(result("review_meds", "SYNTH ok"))
+    assert e.export()["results"]["review_meds"][0]["value"] == "SYNTH ok"
+    log = str(tmp_path / "l.jsonl")
+    with open(log, "w") as fh:
+        fh.writelines(json.dumps(x) + "\n" for x in e.log[:2])
+    assert cli(log, "result", "review_meds", value="SYNTH cli") == 1
+    assert cli(log, "result", "review_meds") == 2; capsys.readouterr()
+    assert O.main(["o", "export", EX, log, EP]) == 0
+    assert json.loads(capsys.readouterr().out)["results"]["review_meds"][0]["value"] == "SYNTH cli"
+
+@pytest.mark.parametrize("bad", [42, "tick", None, {"type": "erase"}])
+def test_replay_refuses_malformed_log_lines(bad):
+    with pytest.raises(Invalid):
+        env(approve=None, log=approval() + [bad])
+
+def test_replay_reports_the_refusal_line():
+    e = env(); e.step(tick("review_meds"))
+    log = [x for x in e.log if x["type"] != "approve"]
+    with pytest.raises(Invalid) as x:
+        env(approve=None, log=log)
+    assert str(x.value) == msg("RF-NOT-APPROVED")

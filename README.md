@@ -21,8 +21,8 @@ There are four roles, fixed when a session opens. Anyone else is refused. Permis
 
 | Role | May |
 |---|---|
-| `patient` | tick, untick |
-| `patient_agent` | tick agent-doable jobs only |
+| `patient` | tick, untick, grant and revoke access for a named assistant (`--agent`) |
+| `patient_agent` | with a grant naming its own id: sees and ticks agent-doable, non-safety jobs only |
 | `clinician` (with `--discipline`, e.g. medicine, nursing, physiotherapy, pharmacy) | tick, untick, cancel, approve |
 | `clinician_agent` (with `--scope`) | tick agent-doable jobs only |
 
@@ -37,12 +37,14 @@ orders has no field for substitute decision-makers. Every event records the acto
 `OrdersEnv` in `orders.py` is the environment. A session (person or agent) reaches it only through `call(method, ...)`, and the per-call table `CALL_PERMS` allows only `observe` and `step`. Everything else belongs to the harness and is refused with "Refused: only the system running this session can start it again or replay it."
 
 - `reset(case_file, actor, role, episode_id, discipline=None, scope=())` (harness) opens a session on one list and episode.
-- `observe(item=None)` (session) shows only what the role may see: a patient's agent sees only agent-doable, non-safety jobs; a clinician's agent sees only lists approved inside its clinician's scope, and only jobs whose listed disciplines it holds. A refused read gets "Refused: you don't have access to this.", the same line whether or not the item exists.
+- `observe(item=None)` (session) shows only what the role may see: a patient's agent sees nothing without a grant naming it, and with one only agent-doable, non-safety jobs; a clinician's agent sees only lists approved inside its clinician's scope, and only jobs whose listed disciplines it holds. A refused read gets "Refused: you don't have access to this.", the same line whether or not the item exists.
 - `step(action)` (session) passes the action through the gate (type, role, discipline) and appends it to the log, or refuses it with a fixed line.
 - `step({"type": "submit", ...})` runs the check once and logs the submission with its result. A fail returns the missing items and the episode continues; only a pass is final. After 3 failed submissions in a row the episode goes to the clinician queue and agents are refused until a clinician sends `review`. A clinician can always finish in their own session.
+- `step({"type": "result", "id": JOB, "value": TEXT, ...})` records a result on a job (agent-callable, same gate as a tick, appended to the log; results accumulate and export carries them). On the command line: `result LIST LOG EPISODE JOB --value TEXT`.
 - `check()` (harness) is a deterministic checker with no model.
 - `replay(log)` (harness) rebuilds state from a log; the same log always gives the same state, and every logged submission result is recomputed.
-- `export()` (harness) refuses any episode whose id does not start with `SYNTH-`.
+- `open_episode(synthetic, timestamp)` (harness) writes the `synthetic` flag as the first log event. It can never be set again or changed.
+- `export()` (harness) reads that flag, never the episode id, and refuses any episode not marked synthetic. Export carries the `interpreter` field (set only by a clinician session on tick events).
 
 The command line wraps the same calls. Done, closed and open are separate. Exit codes: 0 all done, 3 closed (every job done or cancelled with a reason, and safety jobs cancelled only by a clinician), 1 open, 2 invalid or refused.
 
@@ -54,21 +56,27 @@ Python 3.11 or later, standard library only.
 git clone https://github.com/wetware-hq/orders.git
 cd orders
 python3 orders.py compile examples/pharmacy_discharge_reconciliation.toml
+python3 orders.py open    examples/pharmacy_discharge_reconciliation.toml log.jsonl SYNTH-EP-1 --synthetic true --ts 1937-08-10T07:59
 python3 orders.py approve examples/pharmacy_discharge_reconciliation.toml log.jsonl SYNTH-EP-1 --role clinician --discipline pharmacy --actor SYNTH-ph-01 --ts 1937-08-10T08:00
 python3 orders.py tick    examples/pharmacy_discharge_reconciliation.toml log.jsonl SYNTH-EP-1 get_home_list --role clinician_agent --scope pharmacy --actor SYNTH-agent-01 --ts 1937-08-10T08:30 --evidence SYNTH-RX-0001
 python3 orders.py status  examples/pharmacy_discharge_reconciliation.toml log.jsonl SYNTH-EP-1 --now "1937-08-10 12:00"
+python3 orders.py export  examples/pharmacy_discharge_reconciliation.toml log.jsonl SYNTH-EP-1
 ```
 
-The last command exits 1 (open) and flags one overdue job.
+`status` exits 1 (open) and flags one overdue job.
 
 ## Rules
 
-Every rule is a row in `RULES.md` with its signer, class (safety or efficacy), the role it protects and the tests that plant its failure. Everything a person sees comes from `messages.py`, which must match the signed wording table `WORDING.md` word for word.
+Every rule is a row in `RULES.md` with its signer, class (safety or efficacy), the role it protects and the tests that plant its failure.
+
+Everything a person sees comes from `WORDING.md`: the signed line ids and wording (every fill-in value, such as a queue status or a relationship word, is its own row) and any lines still pending signature. It is generated by `scripts/sync_wording.py` from the signed table and carries the SHA-256 of its content in its header. `messages.py` reads only `WORDING.md` and holds no wording of its own.
 
 ```bash
-python3 scripts/rulecheck.py                  # exit 0: every rule has a test, all wording matches WORDING.md
+python3 scripts/rulecheck.py                  # exit 0: every rule has a test, WORDING.md matches its hash, register rows match it
 python3 scripts/mutate.py orders.py _gate     # exit 0: every mutant of the gate is caught
 ```
+
+The tests check `WORDING.md` against its header hash and check that every line id used in the code exists in it. Before pushing, maintainers run `python3 scripts/prepush.py SIGNED_TABLE.md`, which compares `WORDING.md` with the signed table and fails on internal names or local paths.
 
 ## Tests
 
@@ -80,7 +88,7 @@ Contributors run pytest and `scripts/rulecheck.py` before every commit. Agent ru
 
 ## Status
 
-An MCP server is planned. There isn't one yet. All 58 wording lines are signed; `WORDING.md` is the signed table.
+An MCP server is planned. There isn't one yet. All lines in `WORDING.md` are signed. Lines still waiting for signature are in `messages.PENDING` (draft: `WORDING_PENDING.md`); `CQ-SAMEDAY-ALERT` is a placeholder until it is drafted.
 
 ## Licence
 
