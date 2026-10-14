@@ -1,0 +1,32 @@
+# Every function that implements a safety row (refusal, line mapping, queue entry, session/log write).
+# tests/test_safety_functions.py fails the build if one is missing; scripts/mutate.py mutates exactly this list.
+module = "orders.py"
+# Also listed: safety-row functions the scan cannot see (read scope, routing, readiness, hashes).
+functions = [
+    "_apply",
+    "_clear_submissions",
+    "_closed_ok",
+    "_gate",
+    "_refuse",
+    "available",
+    "bad",
+    "call",
+    "check",
+    "check_list",
+    "export",
+    "gap_view",
+    "list_hash",
+    "load_list",
+    "main",
+    "next_view",
+    "no_grant_line",
+    "observe",
+    "open_episode",
+    "opts",
+    "parse_due",
+    "read_log",
+    "replay",
+    "reset",
+    "step",
+    "visible",
+]

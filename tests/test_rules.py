@@ -948,3 +948,39 @@ def test_r11_malformed_action_never_echoes(c):
     p = CASES[c][0](); r = p.step(CASES[c][1])
     seen = json.dumps([r, p.next_view(), p.observe(), p.check(), p.log])
     assert BADF not in seen and BADV not in seen and "timestamp" not in json.dumps([r, p.next_view()])
+
+
+# The signed code -> patient line mapping, pinned here independently of PATIENT_LINE (ids only).
+EXPECTED_LINE = {
+    "role_fixed_at_session_open": "PV-CARE-TEAM-STEP",
+    "action_type": "PV-TRY-AGAIN",
+    "fields": "PV-TRY-AGAIN",
+    "timestamp": "PV-TRY-AGAIN",
+    "interpreter_clinician_only": "PV-CARE-TEAM-STEP",
+    "final": "PV-ALREADY-FINAL",
+    "already_closed": "PV-ALREADY-FINAL",
+    "dependent_done": "PV-STEP-AFTER-DONE",
+    "nothing_to_revoke": "PV-NOTHING-TO-REVOKE",
+    "grant_needs_display_name": "PV-GRANT-NAMES-AGENT",
+    "grant_names_agent": "PV-GRANT-NAMES-AGENT",
+    "job_id": "PV-JOB-NOT-FOUND",
+    "not_done": "PV-NOT-DONE",
+    "grant_names_this_patient": "PV-ONLY-YOU",
+    "result_value": "PV-RESULT-EMPTY",
+}
+
+def test_r11_mapping_pinned():
+    assert O.PATIENT_LINE == EXPECTED_LINE
+
+@pytest.mark.parametrize("c", sorted(EXPECTED_LINE))
+def test_r11_each_code_shows_its_signed_line(c):
+    mk, a = CASES[c]
+    p = mk()
+    if a is None:
+        a = ans(p.ids[0], True)
+    assert p.step(a)["reason"] == msg(EXPECTED_LINE[c])
+
+def test_r11_refuse_passes_unmapped_codes_through_unchanged():
+    p = env("patient")
+    assert p._refuse("ERR:zzz_unmapped") == {"accepted": False, "reason": "ERR:zzz_unmapped"}
+    assert p._refuse(msg("RF-NOT-YOURS")) == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
