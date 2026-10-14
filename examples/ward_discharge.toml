@@ -1,0 +1,40 @@
+# Synthetic example: ward discharge jobs for an invented patient.
+list_id = "SYNTH-discharge-0001"
+
+[[job]]
+id = "review_meds"
+text = "Review discharge medicines"
+depends_on = []
+safety_critical = true
+
+[[job]]
+id = "write_summary"
+text = "Write discharge summary"
+depends_on = ["review_meds"]
+
+[[job]]
+id = "book_followup"
+text = "Book follow-up clinic"
+depends_on = []
+
+[[job]]
+id = "remove_cannula"
+text = "Remove cannula"
+depends_on = []
+safety_critical = true
+
+[[job]]
+id = "teach_meds"
+text = "Explain new medicines to the patient"
+depends_on = ["review_meds"]
+
+[[job]]
+id = "send_summary"
+text = "Send summary to family doctor"
+depends_on = ["write_summary"]
+
+[[job]]
+id = "discharge"
+text = "Patient leaves the ward"
+depends_on = ["send_summary", "book_followup", "remove_cannula", "teach_meds"]
+safety_critical = true
