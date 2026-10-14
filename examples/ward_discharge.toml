@@ -6,35 +6,54 @@ id = "review_meds"
 text = "Review discharge medicines"
 depends_on = []
 safety_critical = true
+owner = "SYNTH-dr-01"
+due = "1936-05-02 10:00"
 
 [[job]]
 id = "write_summary"
 text = "Write discharge summary"
 depends_on = ["review_meds"]
+safety_critical = false
+owner = "SYNTH-dr-01"
+due = "1936-05-02 12:00"
 
 [[job]]
 id = "book_followup"
 text = "Book follow-up clinic"
 depends_on = []
+safety_critical = false
+owner = "SYNTH-clerk-01"
+due = "1936-05-02 12:00"
 
 [[job]]
 id = "remove_cannula"
 text = "Remove cannula"
 depends_on = []
 safety_critical = true
+owner = "SYNTH-rn-01"
+due = "1936-05-02 13:00"
 
 [[job]]
 id = "teach_meds"
 text = "Explain new medicines to the patient"
 depends_on = ["review_meds"]
+safety_critical = false
+owner = "SYNTH-rn-01"
+due = "1936-05-02 13:00"
 
 [[job]]
 id = "send_summary"
 text = "Send summary to family doctor"
 depends_on = ["write_summary"]
+safety_critical = false
+owner = "SYNTH-clerk-01"
+due = "1936-05-02 14:00"
 
 [[job]]
 id = "discharge"
 text = "Patient leaves the ward"
 depends_on = ["send_summary", "book_followup", "remove_cannula", "teach_meds"]
 safety_critical = true
+owner = "SYNTH-dr-01"
+due = "1936-05-02 15:00"
+
