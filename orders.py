@@ -34,7 +34,7 @@ DENY = {"patient": "RF-ROLE-CANCEL", "patient_agent": "RF-ROLE-CANCEL", "clinici
 SCOPED_ACTIONS = {"tick", "cancel", "result"}
 RESULT_MAX = 500   # characters in a recorded result           # on safety_critical jobs: role + discipline checked together
 FIELDS = {"tick": {"id", "evidence"}, "untick": {"id"}, "cancel": {"id", "reason"}, "approve": set(),
-          "submit": set(), "review": set(), "grant": {"agent", "patient"}, "revoke": {"agent", "patient"}, "result": {"id", "value"}}
+          "submit": set(), "review": set(), "grant": {"agent", "agent_name", "patient"}, "revoke": {"agent", "patient"}, "result": {"id", "value"}}
 OPTIONAL = {"tick": {"interpreter"}}
 SESSION_KEYS = {"actor", "role", "discipline", "scope", "episode_id"}
 
@@ -161,6 +161,7 @@ class OrdersEnv:
     def _clear_submissions(self):
         self.submissions, self.fails, self.passed, self.missing = 0, 0, False, []
         self.grants, self.patient, self.access, self.interpreter, self.results = {}, None, None, {}, {}
+        self.names = {}
 
     def _waiting(self, i):
         return [d for d in self.jobs[i]["depends_on"] if d not in self.done]
@@ -204,8 +205,13 @@ class OrdersEnv:
         """Patient-facing next steps: table lines only."""
         n = self.available()
         access = [] if not self.access else [msg("PV-GRANT-LIST" if self.access[0] == "grant" else "PV-REVOKE-LIST",
-                                                 date=self.access[1])]
+                                                 agent_name=self.access[2], date=self.access[1])]
         return access + ([msg("PV-NEXT", plain=self.jobs[i]["text"]) for i in n] or [msg("PV-NOTHING-NEXT")])
+
+    def no_grant_line(self, agent):
+        """RF-NO-GRANT-LIST names the agent only by the display name stored at grant time, never by its id."""
+        name = self.names.get(agent)
+        return msg("RF-NO-GRANT-LIST", agent_name=name) if name else msg("RF-NOT-YOURS")
 
     def visible(self, i=None):
         """Read scope. A patient's agent sees only agent-doable, non-safety jobs. A clinician's agent sees only
@@ -277,12 +283,15 @@ class OrdersEnv:
             return None if self.fails >= MAX_FAILS else code("nothing_to_review")
         g = self.grants.get(s.actor)
         if s.role == "patient_agent" and g is None:
-            return msg("RF-NO-GRANT-LIST")
+            return self.no_grant_line(s.actor)
         if s.role == "patient_agent" and not g["on"]:
             return msg("RF-REVOKED", date=g["revoked_on"])
         if t in ("grant", "revoke"):
             if not (isinstance(e["agent"], str) and e["agent"].strip()):
                 return code("grant_names_agent")
+            if t == "grant" and not (isinstance(e["agent_name"], str) and e["agent_name"].strip()
+                                     and e["agent_name"] != e["agent"] and not e["agent_name"].startswith("SYNTH-")):
+                return code("grant_needs_display_name")
             if e["patient"] != s.actor or self.patient not in (None, e["patient"]):
                 return code("grant_names_this_patient")
             if t == "revoke" and not (self.grants.get(e["agent"]) or {}).get("on"):
@@ -339,7 +348,9 @@ class OrdersEnv:
         elif t in ("grant", "revoke"):
             day = e["timestamp"][:10]
             self.grants[e["agent"]] = {"on": t == "grant", "revoked_on": None if t == "grant" else day}
-            self.patient, self.access = e["patient"], (t, day)
+            if t == "grant":
+                self.names[e["agent"]] = e["agent_name"]
+            self.patient, self.access = e["patient"], (t, day, self.names[e["agent"]])
         elif t == "tick":
             self.done.add(e["id"])
             self.interpreter[e["id"]] = e.get("interpreter", False)
@@ -462,11 +473,11 @@ def main(argv):
                 raise Invalid(msg("RF-NOT-BOOL"))
             env.open_episode(o["synthetic"] == "true", o["ts"])
             with open(pos[1], "a") as f:
-                f.write(json.dumps(env.log[0], ensure_ascii=False) + "\n")
+                f.write(json.dumps(env.log[0]) + "\n")
             return 0
         if cmd == "export" and len(pos) == 3:
             env = OrdersEnv(); env.reset(pos[0], "export", "patient", pos[2]); env.replay(read_log(pos[1]))
-            print(json.dumps(env.export(), indent=1, ensure_ascii=False))
+            print(json.dumps(env.export(), indent=1))
             return 0
         if cmd == "status" and len(pos) == 3:
             env = OrdersEnv(); env.reset(pos[0], "status", "patient", pos[2])
@@ -485,6 +496,8 @@ def main(argv):
             act = {"type": cmd, "timestamp": o["ts"]}
             if cmd in ("grant", "revoke"):
                 act.update(agent=o.get("agent", ""), patient=o["actor"])
+                if cmd == "grant":
+                    act["agent_name"] = o.get("agent-name", "")
             elif FIELDS[cmd]:
                 act["id"] = pos[3]
             if cmd == "result":
@@ -500,7 +513,7 @@ def main(argv):
             if not r["accepted"]:
                 raise Invalid(r["reason"])
             with open(pos[1], "a") as f:
-                f.write(json.dumps(env.log[-1], ensure_ascii=False) + "\n")
+                f.write(json.dumps(env.log[-1]) + "\n")
             c = env.check()
         for x in env.next_view() + c["blocked"] + c["flags"] + ([c["status"]] if c["status"] else []):
             print(x)

@@ -22,8 +22,13 @@ def approval(case=EX, disc="medicine", ep=EP):
 
 AGENT, PATIENT = "SYNTH-person-01", "SYNTH-pt-01"
 
-def grant_ev(t="grant", agent=AGENT, patient=PATIENT, ts=TS):
-    return {"type": t, "timestamp": ts, "agent": agent, "patient": patient}
+NAME = "Robin (assistant)"
+
+def grant_ev(t="grant", agent=AGENT, patient=PATIENT, ts=TS, name=NAME):
+    e = {"type": t, "timestamp": ts, "agent": agent, "patient": patient}
+    if t == "grant":
+        e["agent_name"] = name
+    return e
 
 def granted(log, case=EX, ep=EP):
     p = O.OrdersEnv(); p.reset(case, PATIENT, "patient", ep); p.replay(log)
@@ -566,8 +571,8 @@ def test_r8_02_patient_agent_without_grant_sees_and_does_nothing():
     e = env("patient_agent", grant=False)
     assert e.observe() == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
     assert e.observe("book_followup") == e.observe("no_such_job")
-    assert e.step(tick("book_followup")) == {"accepted": False, "reason": msg("RF-NO-GRANT-LIST")}
-    assert e.step(act("submit"))["reason"] == msg("RF-NO-GRANT-LIST")
+    assert e.step(tick("book_followup")) == {"accepted": False, "reason": msg("RF-NOT-YOURS")}
+    assert e.step(act("submit"))["reason"] == msg("RF-NOT-YOURS")
 
 def test_r8_02_grant_shows_only_agent_doable_non_safety_jobs():
     e = env("patient_agent")
@@ -585,7 +590,7 @@ def test_r8_02_grant_names_agent_and_patient():
 def test_r8_02_other_agent_not_covered():
     e = env("patient_agent")
     o = O.OrdersEnv(); o.reset(EX, "SYNTH-agent-02", "patient_agent", EP); o.replay(e.log)
-    assert o.step(tick("book_followup"))["reason"] == msg("RF-NO-GRANT-LIST")
+    assert o.step(tick("book_followup"))["reason"] == msg("RF-NOT-YOURS")
     assert o.observe()["reason"] == msg("RF-NOT-YOURS")
 
 def test_r8_02_only_patient_grants():
@@ -602,21 +607,22 @@ def test_r8_02_revoke_works_the_same_way():
     a = env("patient_agent", approve=None, log=p.log)
     assert a.step(tick("book_followup")) == {"accepted": False, "reason": msg("RF-REVOKED", date="1936-05-03")}
     assert a.observe()["reason"] == msg("RF-NOT-YOURS")
-    assert p.next_view()[0] == msg("PV-REVOKE-LIST", date="1936-05-03")
+    assert p.next_view()[0] == msg("PV-REVOKE-LIST", agent_name=NAME, date="1936-05-03")
 
 def test_r8_02_patient_sees_grant_line():
     e = env("patient_agent")
     p = env("patient", approve=None, log=e.log)
-    assert p.next_view()[0] == msg("PV-GRANT-LIST", date="1936-05-02")
-    assert env("patient").next_view()[0] != msg("PV-GRANT-LIST", date="1936-05-02")
+    assert p.next_view()[0] == msg("PV-GRANT-LIST", agent_name=NAME, date="1936-05-02")
+    assert env("patient").next_view()[0] != msg("PV-GRANT-LIST", agent_name=NAME, date="1936-05-02")
 
 def test_r8_02_cli_grant_names_agent(tmp_path):
     log = str(tmp_path / "l.jsonl")
     with open(log, "w") as f:
         f.writelines(json.dumps(x) + "\n" for x in approval())
     base = ["o", "grant", EX, log, EP, "--role", "patient", "--actor", PATIENT, "--ts", TS]
-    assert O.main(base) == 2 and O.main(base + ["--agent", AGENT]) == 1
-    assert O.read_log(log)[-1]["agent"] == AGENT
+    assert O.main(base) == 2 and O.main(base + ["--agent", AGENT]) == 2
+    assert O.main(base + ["--agent", AGENT, "--agent-name", NAME]) == 1
+    assert O.read_log(log)[-1]["agent"] == AGENT and O.read_log(log)[-1]["agent_name"] == NAME
 
 # ---- queue text ----
 def test_r8_03_queue_lists_number_and_text():
@@ -693,7 +699,7 @@ def test_r8_08_result_refusals():
     assert env("clinician_agent", scope=("medicine",)).step(result("teach_meds"))["reason"] == msg("RF-PERSON-JOB")
     d = copy.deepcopy(L); d["job"][1]["safety_critical"] = True
     assert env("patient_agent", case=d).step(result("write_summary"))["reason"] == msg("RF-NOT-YOURS")
-    assert env("patient_agent", grant=False).step(result("book_followup"))["reason"] == msg("RF-NO-GRANT-LIST")
+    assert env("patient_agent", grant=False).step(result("book_followup"))["reason"] == msg("RF-NOT-YOURS")
     assert env("clinician", "nursing").step(result("review_meds"))["reason"] == msg("RF-SCOPE", disciplines="medicine")
     assert env(approve=None).step(result("book_followup"))["reason"] == msg("RF-NOT-APPROVED")
     assert env().step(result("ghost"))["reason"] == "ERR:job_id"
@@ -722,3 +728,74 @@ def test_replay_reports_the_refusal_line():
     with pytest.raises(Invalid) as x:
         env(approve=None, log=log)
     assert str(x.value) == msg("RF-NOT-APPROVED")
+
+
+# ---- grant lines carry the display name stored at grant time ----
+@pytest.mark.parametrize("bad", ["", "  ", 5, None, AGENT, "SYNTH-agent-07"])
+def test_r10_grant_needs_display_name_not_id(bad):
+    p = env("patient")
+    assert p.step(grant_ev(name=bad))["accepted"] is False
+
+def test_r10_grant_missing_display_name_refused():
+    p = env("patient"); ev = grant_ev(); del ev["agent_name"]
+    assert p.step(ev)["accepted"] is False
+
+def test_r10_revoke_line_uses_name_stored_at_grant():
+    e = env("patient_agent")
+    p = env("patient", approve=None, log=e.log)
+    assert p.step(grant_ev("revoke", ts="1936-05-03T09:00"))["accepted"]
+    line = p.next_view()[0]
+    assert NAME in line and AGENT not in line
+
+def test_r10_no_grant_refusal_names_agent_from_stored_name():
+    e = env("patient_agent")
+    p = env("patient", approve=None, log=e.log)
+    assert p.step(grant_ev("revoke", ts="1936-05-03T09:00"))["accepted"]
+    a = env("patient_agent", approve=None, log=p.log)
+    assert a.no_grant_line(AGENT) == msg("RF-NO-GRANT-LIST", agent_name=NAME)
+    assert a.no_grant_line("SYNTH-agent-02") == msg("RF-NOT-YOURS")
+
+
+# ---- build checks refuse wrong types with a line, never a crash (mutation) ----
+@pytest.mark.parametrize("field,item,mut", [
+    ("list_id", "list", lambda d: d.update(list_id=7)),
+    ("version", "list", lambda d: d.update(version=7)),
+    ("source_lines", "list", lambda d: d.update(source_lines="7")),
+    ("source_lines", "list", lambda d: d.update(source_lines=-1)),
+    ("record", "list", lambda d: d.update(record=5)),
+    ("record", "list", lambda d: d.update(record=[5])),
+    ("record", "list", lambda d: d.update(record=[{"id": "x"}])),
+    ("record", "list", lambda d: d.update(record=[{"id": "", "kind": "k"}])),
+    ("record", "list", lambda d: d.update(record=[{"id": 5, "kind": "k"}])),
+    ("job", "list", lambda d: d.update(job=5)),
+    ("job", "list", lambda d: d.update(job=[])),
+    ("id", "job 1", lambda d: d["job"][0].update(id=7)),
+    ("text", "job 1", lambda d: d["job"][0].update(text=7)),
+    ("owner", "job 1", lambda d: d["job"][0].update(owner="  ")),
+    ("due", "job 1", lambda d: d["job"][0].update(due=5)),
+    ("due", "job 1", lambda d: d["job"][0].update(due="soon")),
+    ("disciplines", "job 2", lambda d: d["job"][1].update(disciplines=["x"])),
+    ("disciplines", "job 1", lambda d: d["job"][0].update(disciplines="x")),
+    ("disciplines", "job 1", lambda d: d["job"][0].update(disciplines=[])),
+    ("disciplines", "job 1", lambda d: d["job"][0].update(disciplines=[""])),
+    ("disciplines", "job 1", lambda d: d["job"][0].update(disciplines=[5])),
+    ("depends_on", "job 1", lambda d: d["job"][0].update(depends_on="ab")),
+    ("depends_on", "job 1", lambda d: d["job"][0].update(depends_on=[5])),
+    ("depends_on", "job 2", lambda d: d["job"][1].update(depends_on=["review_meds", "review_meds"])),
+])
+def test_build_refuses_wrong_types(field, item, mut):
+    assert bad(mut) == msg("ER-BAD-FIELD", field=field, item=item)
+
+def test_list_hash_is_key_order_free_and_utf8():
+    want = __import__("hashlib").sha256('{"a": 1, "b": "é"}'.encode()).hexdigest()
+    assert O.list_hash({"b": "é", "a": 1}) == want
+
+def test_cli_commands_need_exact_positions():
+    assert O.main(["o", "compile", EX, "extra"]) == 2
+    assert O.main(["o", "status", EX]) == 2
+
+def test_step_return_shapes():
+    e = env("clinician")
+    assert e.step({"type": "next"})["accepted"] is True
+    f = e.step(act("submit"))
+    assert f["accepted"] is True and f["final"] is False
