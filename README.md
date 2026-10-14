@@ -61,10 +61,10 @@ The last command exits 1 (open) and flags one overdue job.
 
 ## Rules
 
-Every rule is a row in `RULES.md` with its signer, class (safety or efficacy), the role it protects and the tests that plant its failure. Everything a person sees comes from the fixed wording table in `messages.py`.
+Every rule is a row in `RULES.md` with its signer, class (safety or efficacy), the role it protects and the tests that plant its failure. Everything a person sees comes from `messages.py`, which must match the signed wording table `WORDING.md` word for word.
 
 ```bash
-python3 scripts/rulecheck.py                  # exit 0: every rule has a test, all wording is from messages.py
+python3 scripts/rulecheck.py                  # exit 0: every rule has a test, all wording matches WORDING.md
 python3 scripts/mutate.py orders.py _gate     # exit 0: every mutant of the gate is caught
 ```
 
@@ -78,7 +78,7 @@ Contributors run pytest and `scripts/rulecheck.py` before every commit. Agent ru
 
 ## Status
 
-An MCP server is planned. There isn't one yet. Some wording lines in `RULES.md` are still marked unsigned (draft).
+An MCP server is planned. There isn't one yet. All wording lines are signed; `WORDING.md` is the signed table.
 
 ## Licence
 

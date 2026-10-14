@@ -367,3 +367,23 @@ def test_untick_and_cancel_need_right_state():
     e.step(cancel("write_summary"))
     assert e.step(cancel("write_summary"))["reason"] == "ERR:already_closed"
     assert e.step(tick("write_summary"))["reason"] == "ERR:already_closed"
+
+
+STRICT_WRONG = [1, 0, "yes", "false", "true", None, 1.0, 0.0, "", [], {}]
+
+@pytest.mark.parametrize("k", ["safety_critical", "agent_doable"])
+@pytest.mark.parametrize("v", STRICT_WRONG, ids=repr)
+def test_s06_yes_no_fields_strict_bool(k, v):
+    assert bad(lambda d: d["job"][0].update({k: v})) == msg("RF-NOT-BOOL")
+
+@pytest.mark.parametrize("k", ["safety_critical", "agent_doable"])
+@pytest.mark.parametrize("v", [True, False])
+def test_s06_yes_no_fields_real_bool_accepted(k, v):
+    d = copy.deepcopy(L); d["job"][0][k] = v
+    if k == "safety_critical" and not v:
+        d["job"][0].pop("disciplines", None)
+    O.check_list(d)
+
+def test_not_overdue_at_exact_due_time():
+    flags = env().check("1936-05-02 15:00")["flags"]
+    assert not any(f.startswith("Overdue: Patient leaves the ward") for f in flags)

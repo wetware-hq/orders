@@ -80,7 +80,7 @@ def check_list(d):
             raise bad("due", item)
         for k in ("safety_critical", "agent_doable"):
             if type(j[k]) is not bool:
-                raise bad(k, item)
+                raise Invalid(msg("RF-NOT-BOOL"))
         if type(j["source_line"]) is not int or not 1 <= j["source_line"] <= d["source_lines"]:
             raise Invalid(msg("CK-NO-SOURCE", n=n))
         if "disciplines" in j and (not j["safety_critical"] or not isinstance(j["disciplines"], list)
