@@ -989,7 +989,7 @@ def test_r11_refuse_passes_unmapped_codes_through_unchanged():
 def test_check_reports_the_full_submission_status():
     """The checker carries the full submission status (no cut at ':'): none before, ST-CHECK-FAIL, then ST-CHECK-PASS."""
     import os, re
-    raw = (pathlib.Path(os.environ.get("STACK_SIBLINGS_DIR") or ROOT.parent) / "wording" / "forms_orders_lines_SIGNED.md").read_text()
+    raw = (pathlib.Path(os.environ.get("WARD_SIBLINGS_DIR") or ROOT.parent) / "wording" / "forms_orders_lines_SIGNED.md").read_text()
     signed = lambda lid: re.search(rf"^\| {lid} \|(?:.*\|)? (.*) \|$", raw, re.M).group(1)
     e = env()
     assert e.check()["checked"] is None
