@@ -4,9 +4,25 @@ orders - a job board for clinical checklists: jobs with owners, due times and de
 
 > Example data is synthetic (`SYNTH-` ids, 1930s dates, made-up people). orders is a research prototype. It is not a medical device and has not been approved for use with real patient data.
 
+---
+
+## Clinical abstract
+
+Ward jobs get lost between handovers: a blood test that was never taken, a scan booked before the consent was signed, a box ticked with nothing to show it was done. orders keeps the job list a clinician approved and makes each job wait for the jobs it depends on.
+
+Each job has an owner, a due time and its dependencies. A job is ticked only with evidence (a named record) and only by someone allowed to do it; safety-critical jobs are limited to the listed disciplines, and assistants may tick only jobs marked as safe for them. Every tick, untick and cancel is kept in order, so the list can be replayed and checked at any time.
+
+What the clinician sees: each job as done, closed, open or invalid, with the reason. What orders is not: it does not decide which jobs a patient needs, gives no clinical advice, is not a medical device, and runs on synthetic data only.
+
+---
+
 ## Purpose
 
 orders runs clinical checklists as an agentic environment. It works in any clinical setting: medicine, nursing, allied health, and lists that patients work through themselves. Each job has an owner, a due time and the jobs it depends on. A job can only be ticked when its dependencies are done, and only with evidence. orders does not give clinical advice and does not decide which jobs a list needs; it tracks the list a clinician approved and refuses anything the rules don't allow.
+
+## Engineering specification
+
+System: one checklist environment over an append-only JSONL log. Actors reach it through `observe` and `step`; `reset`, `replay`, `check` and `export` are harness-only. Settings read: `WARD_SIBLINGS_DIR` (signed wording folder), `TEST_SEED` (test order). Standard library only, Python 3.11+.
 
 ## Model
 
