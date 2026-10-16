@@ -68,7 +68,7 @@ def scripted_agent(e):
     while (nxt := e.step({"type": "next"})["next"]):
         assert e.step(tick(nxt[0]))["accepted"], nxt
 
-# ---------- earlier signed rules (Mathew) ----------
+# ---------- earlier signed rules ----------
 def test_job_fields_owner_due_safety():
     for k in ("owner", "due", "safety_critical"):
         assert bad(lambda d: d["job"][0].pop(k)) == msg("ER-BAD-FIELD", field=k, item="job 1")
@@ -215,7 +215,7 @@ def test_evidence_must_be_registered_record():
     assert env().step(tick("review_meds", "SYNTH-REC-9999"))["reason"] == msg("RF-EVIDENCE-NOT-FOUND")
     assert env().step(tick("review_meds", "SYNTH-REC-0002"))["accepted"]
 
-# ---------- generality (Mathew) ----------
+# ---------- generality (owner ruling) ----------
 def test_roles_are_four_with_discipline():
     for args in (("clinician", "  "), ("patient", "medicine"), ("clinician_agent", None, ("",)),
                  ("patient", None, ("medicine",)), ("clinician", 3)):
