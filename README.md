@@ -117,3 +117,15 @@ S05 and S07 were checked with a scripted stand-in, not a real AI model. The scri
 ## Status
 
 Not for use with real patients.
+
+## References
+
+orders makes no biological or clinical claim. It tracks a clinician-approved checklist over an append-only log and refuses what the rules don't allow, so nothing it does rests on a measured result in the literature. Entries are tied to the one claim that rests on them; nothing merely adjacent is listed, and anything listed carries a DOI, PMID or arXiv id.
+
+### Peer-reviewed
+
+- None. orders tracks jobs, dependencies and evidence and decides nothing clinical, so there is no measured finding it depends on. A paper here would be adjacent reading dressed up as evidence, left out on purpose rather than to hide a gap.
+
+### Unsupported claims (no peer-reviewed support)
+
+- Every claim orders makes — that a job waits for the jobs it depends on, that a tick needs evidence, and that a safety-critical job is limited to its listed disciplines — is shown by its own rules and tests, not by peer-reviewed research. A green is the job board behaving as written on synthetic data, nothing about real care.
